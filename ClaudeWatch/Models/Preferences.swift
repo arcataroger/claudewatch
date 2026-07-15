@@ -267,4 +267,50 @@ final class Preferences: ObservableObject {
 
     // Extra usage (pay-as-you-go credits)
     @AppStorage("extraUsageDisplay") var extraUsageDisplay: ExtraUsageDisplay = .whenUsed
+
+    // Extra-usage FETCH opt-in. Security-sensitive and distinct from
+    // `extraUsageDisplay` (which only controls whether the section is shown):
+    // this controls whether the statusline hook reads your Claude OAuth token and
+    // calls the undocumented /api/oauth/usage endpoint at all. New installs start
+    // OFF; existing users keep it on (see AppDelegate.migrateExtraUsageChoiceIfNeeded).
+    // Mirrored to disk for the hook via writeStatuslineConfig().
+    @AppStorage("extraUsageFetchEnabled") var extraUsageFetchEnabled: Bool = false
+    // Show the one-time "extra usage is now optional" heads-up in the popover.
+    @AppStorage("showExtraUsageOptionalBanner") var showExtraUsageOptionalBanner: Bool = false
+
+    /// The app version (`CFBundleShortVersionString`) recorded on the previous
+    /// launch; empty on a fresh install or the first launch after this key was
+    /// introduced. This is the migration ledger — compare it against the current
+    /// bundle version in `AppDelegate.runMigrationsIfNeeded()` to run one-time
+    /// upgrade steps, then stamp it forward. Prefer this over sniffing files.
+    @AppStorage("lastRanAppVersion") var lastRanAppVersion: String = ""
+
+    /// Mirror `extraUsageFetchEnabled` to a small JSON file the statusline hook
+    /// reads, so the app's dialog/toggle — not an environment variable — decides
+    /// whether the hook performs the credentialed extra-usage fetch. Written into
+    /// the app's own sandbox container (no entitlement needed); the hook reads it
+    /// from that path. Absent file or `false` => the hook reads no token and makes
+    /// no API call.
+    ///
+    /// Returns `true` iff the file was durably written; callers may ignore it (the
+    /// config is re-mirrored on every launch and whenever the setting changes).
+    @discardableResult
+    func writeStatuslineConfig() -> Bool {
+        let fm = FileManager.default
+        guard let base = try? fm.url(for: .applicationSupportDirectory,
+                                     in: .userDomainMask,
+                                     appropriateFor: nil,
+                                     create: true) else { return false }
+        let dir = base.appendingPathComponent("ClaudeWatch", isDirectory: true)
+        let url = dir.appendingPathComponent("statusline-config.json")
+        let payload: [String: Any] = ["extra_usage_enabled": extraUsageFetchEnabled]
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted])
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            return false
+        }
+    }
 }

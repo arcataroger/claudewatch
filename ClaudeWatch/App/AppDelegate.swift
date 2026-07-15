@@ -12,10 +12,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let preferences = Preferences.shared
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Migrations first: the existing-user check reads usage-history.json before
+        // the coordinator's first sync would write to it.
+        runMigrationsIfNeeded()
         setupStatusItem()
         setupPopover()
         coordinator.start()
         registerHotkey()
+        // Keep the statusline hook's view of the extra-usage setting in sync.
+        preferences.writeStatuslineConfig()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -72,6 +77,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    // MARK: - Migrations
+
+    /// Version-gated one-time upgrade steps. Compares the persisted
+    /// `lastRanAppVersion` with the current bundle version, runs any needed
+    /// migrations, then stamps the version forward. Must run before the coordinator
+    /// starts, since the existing-user check reads usage-history.json, which the
+    /// coordinator writes to on its first sync this session.
+    private func runMigrationsIfNeeded() {
+        let current = Self.appVersion
+        let previous = preferences.lastRanAppVersion
+        guard previous != current else { return }
+
+        // Extra-usage opt-in migration. `previous` is empty only on the first launch
+        // that records a version — either a brand-new install or an upgrade from an
+        // older, pre-tracking build. Disambiguate via the app's own prior output: an
+        // existing user (has recorded history) keeps the always-on behavior they had,
+        // with a one-time heads-up; a fresh install stays at the default (off).
+        // Future migrations gate on `previous` and never need this heuristic.
+        if previous.isEmpty && UsageHistoryStore.hasPriorHistory {
+            preferences.extraUsageFetchEnabled = true
+            preferences.showExtraUsageOptionalBanner = true
+        }
+
+        preferences.lastRanAppVersion = current
+        preferences.writeStatuslineConfig()
+    }
+
+    /// Current app version (`CFBundleShortVersionString`, falling back to build),
+    /// never empty so the migration ledger always advances on first run.
+    private static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        return (info?["CFBundleShortVersionString"] as? String)
+            ?? (info?["CFBundleVersion"] as? String)
+            ?? "0"
     }
 
     // MARK: - Hotkey

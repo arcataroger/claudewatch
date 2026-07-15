@@ -9,6 +9,11 @@ struct PopoverRoot: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if preferences.showExtraUsageOptionalBanner && !showingSettings {
+                extraUsageBanner
+                Divider()
+            }
+
             if showingSettings {
                 settingsView
             } else {
@@ -61,6 +66,43 @@ struct PopoverRoot: View {
             .padding(14)
         }
         .frame(minHeight: 400)
+    }
+
+    /// One-time heads-up shown to existing users after the extra-usage feature
+    /// became opt-in. Dismissed (or "Open Settings") clears the flag for good.
+    private var extraUsageBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Extra-usage tracking is now optional.")
+                    .font(.caption).fontWeight(.medium)
+                Text("Fetching your pay-as-you-go spend uses your Claude sign-in — technically a legal gray area under Anthropic’s terms. We left it on since you were already using it, but you can turn it off in Settings.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Open Settings") {
+                    preferences.showExtraUsageOptionalBanner = false
+                    showingSettings = true
+                }
+                .font(.caption)
+                .buttonStyle(.link)
+                .padding(.top, 1)
+            }
+            Spacer(minLength: 0)
+            Button {
+                preferences.showExtraUsageOptionalBanner = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08))
     }
 
     private var bottomBar: some View {

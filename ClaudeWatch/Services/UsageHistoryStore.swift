@@ -16,16 +16,34 @@ final class UsageHistoryStore: ObservableObject {
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    init() {
+    /// Location of the persisted history file, resolved without side effects
+    /// (`init` uses the same path but also creates the directory).
+    static var fileURL: URL {
         let fm = FileManager.default
         let base = (try? fm.url(for: .applicationSupportDirectory,
                                 in: .userDomainMask,
                                 appropriateFor: nil,
-                                create: true))
+                                create: false))
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("ClaudeWatch", isDirectory: true)
-        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        self.fileURL = dir.appendingPathComponent("usage-history.json")
+        return base.appendingPathComponent("ClaudeWatch", isDirectory: true)
+            .appendingPathComponent("usage-history.json")
+    }
+
+    /// True if a history file with at least one recorded event already exists —
+    /// i.e. a prior version of the app has run. Used once to detect existing users
+    /// during migration; prefer `Preferences.lastRanAppVersion` for future gating.
+    static var hasPriorHistory: Bool {
+        guard let data = try? Data(contentsOf: fileURL) else { return false }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([UsageHistoryEvent].self, from: data))?.isEmpty == false
+    }
+
+    init() {
+        let url = Self.fileURL
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        self.fileURL = url
 
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601

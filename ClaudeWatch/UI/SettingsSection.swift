@@ -101,6 +101,13 @@ struct SettingsSection: View {
             .labelsHidden()
 
             Text("Extra usage").font(.subheadline).foregroundStyle(.secondary)
+            Toggle("Track pay-as-you-go spend", isOn: $preferences.extraUsageFetchEnabled)
+                .onChange(of: preferences.extraUsageFetchEnabled) { _, _ in
+                    // Mirror the choice to the file the statusline hook reads.
+                    preferences.writeStatuslineConfig()
+                }
+            Text("Reads your Claude token to call an undocumented Anthropic API. Off by default; your 5h/7d bars don’t need it.")
+                .font(.caption2).foregroundStyle(.secondary)
             Picker("", selection: $preferences.extraUsageDisplay) {
                 ForEach(ExtraUsageDisplay.allCases, id: \.self) { m in
                     Text(m.label).tag(m)
@@ -108,6 +115,7 @@ struct SettingsSection: View {
             }
             .pickerStyle(.menu)
             .labelsHidden()
+            .disabled(!preferences.extraUsageFetchEnabled)
 
             Divider()
 

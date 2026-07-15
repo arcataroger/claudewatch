@@ -132,8 +132,42 @@ case "$effort_level" in
     *)      out+="${green}${effort_level}${reset}" ;;
 esac
 
-# ===== Cross-platform OAuth token resolution (from statusline.sh) =====
-# Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
+# ===== ClaudeWatch: optional "extra usage" via the Anthropic OAuth API =====
+# OFF BY DEFAULT. When enabled, get_oauth_token() (below) reads your Claude OAuth
+# access token — from the macOS Keychain ("Claude Code-credentials"),
+# ~/.claude/.credentials.json, or the GNOME Keyring — and the usage section calls
+# the UNDOCUMENTED endpoint https://api.anthropic.com/api/oauth/usage (spoofing the
+# claude-code User-Agent) to fetch pay-as-you-go "extra usage" credit data.
+#
+# The 5h/7d progress bars DO NOT need this — they come from Claude Code's native
+# rate_limits stdin data. This path only adds the "extra usage" dollar figure, at
+# the cost of touching your credentials and calling an undocumented endpoint (a
+# Terms-of-Service grey area).
+#
+# Whether it runs is decided in this precedence order:
+#   1. CLAUDEWATCH_EXTRA_USAGE env var — an explicit override for power users /
+#      headless setups (accepts 1/true/on to force on, 0/false/off to force off).
+#   2. Otherwise, the choice the ClaudeWatch app persisted via its first-run
+#      consent dialog (or Settings toggle). The app writes this flag into its own
+#      sandbox container; we read it from there. No app, or user hasn't opted in
+#      => file absent or false.
+#   3. Default: OFF. No token is read and no Anthropic API call is made.
+extra_usage_enabled=false
+cw_app_config="$HOME/Library/Containers/com.elliotykim.claudewatch/Data/Library/Application Support/ClaudeWatch/statusline-config.json"
+case "${CLAUDEWATCH_EXTRA_USAGE:-}" in
+    1|true|yes|on|TRUE|YES|ON)   extra_usage_enabled=true ;;
+    0|false|no|off|FALSE|NO|OFF) extra_usage_enabled=false ;;
+    *)
+        if [ -f "$cw_app_config" ] \
+           && [ "$(jq -r '.extra_usage_enabled // false' "$cw_app_config" 2>/dev/null)" = "true" ]; then
+            extra_usage_enabled=true
+        fi
+        ;;
+esac
+
+# Cross-platform OAuth token resolution. Only ever CALLED when extra_usage_enabled
+# is true (see the usage section); defining the function has no side effects.
+# Tries credential sources in order: env var -> macOS Keychain -> Linux creds file -> GNOME Keyring
 get_oauth_token() {
     local token=""
 
@@ -201,46 +235,52 @@ if [ -n "$builtin_five_hour_pct" ] || [ -n "$builtin_seven_day_pct" ]; then
     use_builtin=true
 fi
 
-# Fall back to cached API call only when Claude Code didn't supply rate_limits data
-claude_config_dir_hash=$(echo -n "$claude_config_dir" | shasum -a 256 2>/dev/null || echo -n "$claude_config_dir" | sha256sum 2>/dev/null)
-claude_config_dir_hash=$(echo "$claude_config_dir_hash" | cut -c1-8)
-cache_file="/tmp/claude/statusline-usage-cache-${claude_config_dir_hash}.json"
-cache_max_age=60  # seconds between API calls
-mkdir -p /tmp/claude
-
-needs_refresh=true
+# usage_data holds the /api/oauth/usage response and is the ONLY source of the
+# pay-as-you-go "extra usage" figure. It stays empty unless the optional
+# extra-usage path is enabled (see CLAUDEWATCH_EXTRA_USAGE / the app setting);
+# every extra_usage branch below is gated on a non-empty $usage_data, so by
+# default they no-op.
 usage_data=""
 
-# Check cache — shared across all Claude Code instances to avoid rate limits.
-# We always read the cached API response (even when use_builtin=true) because
-# extra_usage only comes from the API, not from Claude Code's rate_limits input.
-if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
-    cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
-    now=$(date +%s)
-    cache_age=$(( now - cache_mtime ))
-    if [ "$cache_age" -lt "$cache_max_age" ]; then
-        needs_refresh=false
-    fi
-    usage_data=$(cat "$cache_file" 2>/dev/null)
-fi
+if $extra_usage_enabled; then
+    # Opt-in only: read the OAuth token and call the undocumented usage endpoint.
+    # Responses are cached (60s) in /tmp/claude and shared across Claude Code panes
+    # to avoid hammering the aggressively rate-limited endpoint.
+    claude_config_dir_hash=$(echo -n "$claude_config_dir" | shasum -a 256 2>/dev/null || echo -n "$claude_config_dir" | sha256sum 2>/dev/null)
+    claude_config_dir_hash=$(echo "$claude_config_dir_hash" | cut -c1-8)
+    cache_file="/tmp/claude/statusline-usage-cache-${claude_config_dir_hash}.json"
+    cache_max_age=60  # seconds between API calls
+    mkdir -p /tmp/claude
 
-# When rate_limits are provided inline by Claude Code we don't need a fresh
-# fetch just for 5h/7d, but we do refresh so extra_usage stays current.
-if $needs_refresh; then
-    touch "$cache_file"  # stampede lock: prevent parallel panes from fetching simultaneously
-    token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 10 \
-            -H "Accept: application/json" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
-            -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
-            "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        # Only cache valid usage responses (not error/rate-limit JSON)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
+    needs_refresh=true
+
+    # Check cache — shared across all Claude Code instances to avoid rate limits.
+    if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
+        cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+        now=$(date +%s)
+        cache_age=$(( now - cache_mtime ))
+        if [ "$cache_age" -lt "$cache_max_age" ]; then
+            needs_refresh=false
+        fi
+        usage_data=$(cat "$cache_file" 2>/dev/null)
+    fi
+
+    if $needs_refresh; then
+        touch "$cache_file"  # stampede lock: prevent parallel panes from fetching simultaneously
+        token=$(get_oauth_token)
+        if [ -n "$token" ] && [ "$token" != "null" ]; then
+            response=$(curl -s --max-time 10 \
+                -H "Accept: application/json" \
+                -H "Content-Type: application/json" \
+                -H "Authorization: Bearer $token" \
+                -H "anthropic-beta: oauth-2025-04-20" \
+                -H "User-Agent: claude-code/2.1.34" \
+                "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+            # Only cache valid usage responses (not error/rate-limit JSON)
+            if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
+                usage_data="$response"
+                echo "$response" > "$cache_file"
+            fi
         fi
     fi
 fi
@@ -458,6 +498,7 @@ fi
 # component on the status page still surface in the statusline.
 status_cache_file="/tmp/claude/statusline-service-status-cache.json"
 status_cache_max_age=300  # 5 minutes
+mkdir -p /tmp/claude 2>/dev/null  # ensure the cache dir exists (the usage path that used to create it is now gated)
 
 status_needs_refresh=true
 status_data=""

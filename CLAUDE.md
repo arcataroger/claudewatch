@@ -34,6 +34,12 @@ ClaudeWatch is a sandboxed macOS menu-bar app (LSUIElement) with zero external d
 
 **Color system:** `GraphicColor` (menu bar graphic) and `BarColor` (popover progress bars) are separate enums with independent preferences. Both share a `dynamicColor(_:base:)` helper for threshold-based coloring (blue/yellow/orange/red by usage %).
 
+## Extra usage (opt-in)
+
+The pay-as-you-go "extra usage" figure is the one feature that needs a credential: `statusline.sh` reads the Claude OAuth token and calls the undocumented `api.anthropic.com/api/oauth/usage` (a ToS grey area). It's gated by `extraUsageFetchEnabled` (Settings toggle), which `Preferences.writeStatuslineConfig()` mirrors to `statusline-config.json` in the app's container for `statusline.sh` to read (env `CLAUDEWATCH_EXTRA_USAGE` overrides). The 5h/7d bars never need it. New installs default off; existing users keep it on via a one-time migration plus a dismissible popover heads-up. Distinct from `extraUsageDisplay` (display only).
+
+Migrations are version-gated: `AppDelegate.runMigrationsIfNeeded()` compares the current bundle version against `Preferences.lastRanAppVersion` (stamped each launch) — use that ledger for future one-time upgrades rather than sniffing files. This first migration bootstraps "existing user" from `UsageHistoryStore.hasPriorHistory`, since no prior version was recorded yet.
+
 ## Gotchas
 
 - **@MainActor is pervasive.** AppDelegate, AppCoordinator, Preferences, and all timer/observer callbacks must run on main. Services are main-agnostic.
